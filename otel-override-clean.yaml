@@ -1,0 +1,83 @@
+global:
+  domain: eu2.coralogix.com
+  clusterName: spanmetrics
+  logLevel: warn
+
+opentelemetry-agent:
+  presets:
+    spanMetrics:
+      enabled: true
+    loadBalancing:
+      enabled: true
+      routingKey: "traceID"
+      hostname: coralogix-opentelemetry-gateway
+  config:
+    receivers:
+      datadog:
+        endpoint: 0.0.0.0:8127
+      statsd:
+        endpoint: 0.0.0.0:8128
+      filelog:
+        include:
+          - /var/log/pods/*/*/*.log
+          # TODO: Modify for required Namespaces
+          # - /var/log/pods/hyver-customer-frontend_*/*/*.log
+          # - /var/log/pods/stg8_*/*/*.log
+          # - /var/log/pods/devops-1_*/*/*.log
+          # - /var/log/pods/qa-heavy_*/*/*.log
+          # - /var/log/pods/qa_*/*/*.log
+
+
+    service:
+      pipelines:
+        traces:
+          exporters:
+            - loadbalancing
+
+
+  ports:
+    datadog:
+      enabled: true
+      containerPort: 8127
+      servicePort: 8127
+      hostPort: 8127
+      protocol: TCP
+    statsd:
+      enabled: true
+      containerPort: 8128
+      servicePort: 8128
+      hostPort: 8128
+      protocol: UDP
+
+opentelemetry-gateway:
+  enabled: true
+  # For production use-cases please increase replicas
+  # and resource requests and limits
+  replicaCount: 1
+  #resources:
+  #   requests:
+  #     cpu: 0.5
+  #     memory: 256Mi
+  #   limits:
+  #     cpu: 2
+  #     memory: 4G
+
+  config:
+    processors:
+      tail_sampling:
+        # Update configuration here, with your settings and tail sampling policies
+        # Docs: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/tailsamplingprocessor
+        policies:
+          [
+            {
+              name: errors-policy,
+              type: status_code,
+              status_code: {status_codes: [ERROR]}
+            },
+            {
+              name: randomized-policy,
+              type: probabilistic,
+              probabilistic: {sampling_percentage: 10}
+            },
+          ]
+

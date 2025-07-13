@@ -1,0 +1,183 @@
+global:
+  domain: eu2.coralogix.com
+  clusterName: map
+  logLevel: warn
+
+  datadogAPIKey: 7dfe41942cbf4f3b53b683269aaecdcf
+  datadogSite: datadoghq.eu
+
+opentelemetry-agent:
+  config:
+    exporters:
+      datadog:
+        api:
+          key: "7dfe41942cbf4f3b53b683269aaecdcf"
+          site: "datadoghq.eu" # Confirm that this is correct
+        hostname: ${env:KUBE_NODE_NAME}
+    receivers:
+      datadog:
+        endpoint: 0.0.0.0:8127
+      statsd:
+        endpoint: 0.0.0.0:8128
+      filelog:
+        include:
+          #- /var/log/pods/*/*/*.log
+          # TODO: Modify for required Namespaces
+          #- /var/log/pods/default_*/*/*.log
+          - /var/log/pods/*/*/*.log
+    processors:
+      deltatocumulative:
+        max_stale: 5m  # Remove series that haven't received updates in 5 minutes
+        max_streams: 10000  # Limit number of streams tracked in memory
+
+      # Add trace information to logs and attributes
+      transform/trace_injection:
+        error_mode: ignore
+        trace_statements:
+          - context: span
+            statements:
+              # Add trace_id and span_id as attributes
+              - set(attributes["trace_id"], trace_id)
+              - set(attributes["span_id"], span_id)
+              # Add trace information to resource attributes
+              - set(resource.attributes["trace_id"], trace_id)
+              - set(resource.attributes["span_id"], span_id)
+              # Add service correlation
+              - set(attributes["service.correlation.trace_id"], trace_id)
+              - set(attributes["service.correlation.span_id"], span_id)
+
+      transform/rename_dd_spans:
+        trace_statements:
+          - context: span
+            statements:
+              - set(name, attributes["dd.span.Resource"])
+      transform/db:
+        error_mode: silent
+        trace_statements:
+          - context: span
+            statements:
+              - set(attributes["db.namespace"], attributes["db.name"]) where attributes["db.namespace"] == nil
+              - set(attributes["db.namespace"], attributes["server.address"]) where attributes["db.namespace"] == nil
+              - set(attributes["db.namespace"], attributes["network.peer.name"]) where attributes["db.namespace"] == nil
+              - set(attributes["db.namespace"], attributes["net.peer.name"]) where attributes["db.namespace"] == nil
+              - set(attributes["db.namespace"], attributes["db.system"]) where attributes["db.namespace"] == nil
+              - set(attributes["db.operation.name"], attributes["db.operation"]) where attributes["db.operation.name"] == nil
+              - set(attributes["db.collection.name"], attributes["db.sql.table"]) where attributes["db.collection.name"] == nil
+              - set(attributes["db.collection.name"], attributes["db.cassandra.table"]) where attributes["db.collection.name"] == nil
+              - set(attributes["db.collection.name"], attributes["db.mongodb.collection"]) where attributes["db.collection.name"] == nil
+              - set(attributes["db.collection.name"], attributes["db.redis.database_index"]) where attributes["db.collection.name"] == nil
+              - set(attributes["db.collection.name"], attributes["db.elasticsearch.path_parts.index"]) where attributes["db.collection.name"] == nil
+              - set(attributes["db.collection.name"], attributes["db.cosmosdb.container"]) where attributes["db.collection.name"] == nil
+              - set(attributes["db.collection.name"], attributes["aws_dynamodb.table_names"]) where attributes["db.collection.name"] == nil
+
+      transform:
+        metric_statements:
+          - context: datapoint
+            statements:
+              - set(attributes["host.name"], resource.attributes["host.name"])
+              - set(attributes["process.command"], resource.attributes["process.command"])
+              - set(attributes["process.command_line"], resource.attributes["process.command_line"])
+              - set(attributes["process.executable.name"], resource.attributes["process.executable.name"])
+              - set(attributes["process.executable.path"], resource.attributes["process.executable.path"])
+              - set(attributes["process.owner"], resource.attributes["process.owner"])
+              - set(attributes["process.parent_pid"], resource.attributes["process.parent_pid"])
+              - set(attributes["process.pid"], resource.attributes["process.pid"])
+      transform/ddtrace_coralogix:
+        error_mode: ignore
+        trace_statements:
+          - context: span
+            statements:
+              - set(resource.attributes["service.name"], attributes["service.name"])
+          - context: span
+            conditions:
+              - kind == 2
+            statements:
+              - set(name, attributes["dd.span.Resource"])
+          - context: span
+            conditions:
+              - attributes["db.type"] != nil or attributes["db.system"] != nil
+            statements:
+              - set(attributes["db.system"], attributes["db.type"])
+              - replace_match(attributes["db.system"], "postgres", "postgresql")
+              - replace_match(attributes["db.system"], "sql-server", "mssql")
+              - set(attributes["db.statement"], attributes["dd.span.Resource"])
+              - set(attributes["db.statement"], attributes["mongodb.query"])
+              - set(attributes["db.statement"], attributes["redis.raw_command"])
+              - set(attributes["otel.status_description"], attributes["error.message"])
+
+      transform/coralogix_clean:
+        error_mode: ignore
+        trace_statements:
+          - context: span
+            statements:
+              - delete_key(attributes,"language")
+              - delete_key(attributes,"dd.span.Resource")
+              - delete_key(resource.attributes,"telemetry.sdk.version")
+              - delete_key(resource.attributes,"telemetry.sdk.name")
+              # - delete_matching_keys(attributes, "^_?dd\..*")
+              # - delete_matching_keys(resource.attributes, "^_?dd\..*")
+
+      transform/pod:
+        error_mode: ignore
+        trace_statements:
+          - context: span
+            statements:
+              - set(resource.attributes["k8s.deployment.name"], ExtractPatterns(resource.attributes["_dd.tags.container"], "kube_deployment:(?P<deployment>[^,]+)")["deployment"])
+              - set(attributes["k8s.deployment.name"], ExtractPatterns(resource.attributes["_dd.tags.container"], "kube_deployment:(?P<deployment>[^,]+)")["deployment"])
+              - set(resource.attributes["k8s.pod.name"], ExtractPatterns(resource.attributes["_dd.tags.container"], "pod_name:(?P<pod>[^,]+)")["pod"])
+              - set(attributes["k8s.pod.name"], ExtractPatterns(resource.attributes["_dd.tags.container"], "pod_name:(?P<pod>[^,]+)")["pod"])
+              - set(resource.attributes["k8s.namespace.name"], ExtractPatterns(resource.attributes["_dd.tags.container"], "kube_namespace:(?P<namespace>[^,]+)")["namespace"])
+              - set(attributes["k8s.namespace.name"], ExtractPatterns(resource.attributes["_dd.tags.container"], "kube_namespace:(?P<namespace>[^,]+)")["namespace"])
+
+      # filter/services:
+      #   spans:
+      #     include:
+      #       match_type: regexp
+      #       services:
+      #         - cylogin
+      #         - cyfront-v2*
+
+    service:
+      pipelines:
+        metrics/dd:
+          receivers:
+            - datadog
+          processors:
+            - deltatocumulative
+            - batch
+          exporters:
+            - coralogix
+        traces/dd:
+          receivers:
+            - datadog
+          processors:
+            - k8sattributes
+            - transform/trace_injection
+            - transform/pod
+            - transform/rename_dd_spans
+            - transform
+            - transform/ddtrace_coralogix
+            - transform/db
+            - transform/coralogix_clean
+            # - filter/services
+            - batch
+          exporters:
+            - coralogix
+        # traces:
+        #   exporters:
+        #     - coralogix
+        #     - datadog
+
+  ports:
+    datadog:
+      enabled: true
+      containerPort: 8127
+      servicePort: 8127
+      hostPort: 8127
+      protocol: TCP
+    statsd:
+      enabled: true
+      containerPort: 8128
+      servicePort: 8128
+      hostPort: 8128
+      protocol: UDP
